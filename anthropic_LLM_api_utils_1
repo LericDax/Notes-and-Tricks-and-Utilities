@@ -1,0 +1,178 @@
+# utils.py
+import os
+import time
+import math
+import datetime
+import random
+import asyncio
+import httpx
+from dotenv import load_dotenv
+from grimoire import wrap_text as wt, order_words as ow, spells as sp, spells, order_words
+from persona import get_persona_attributes, get_persona_by_name
+
+load_dotenv()
+api_key = os.getenv("ANTHROPIC_API_KEY")
+
+async def make_api_call(func, *args, max_retries=5, retry_delay=20, **kwargs):
+    retry_count = 0
+    while retry_count < max_retries:
+        try:
+            return await func(*args, **kwargs)
+        except Exception as e:
+            retry_count += 1
+            if retry_count < max_retries:
+                print(f"API call failed. Retrying in {retry_delay} seconds... (Attempt {retry_count}/{max_retries})")
+                await asyncio.sleep(retry_delay)
+            else:
+                raise e
+
+async def generate_response(persona_name, query, context, persona_attributes, max_retries=5, initial_delay=10, backoff_factor=2):
+    system_prompt = format_system_prompt(persona_name, query, context, persona_attributes)    
+    retry_count = 0
+    retry_delay = initial_delay
+    while retry_count < max_retries:
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    json={
+                        "model": "claude-3-opus-20240229",
+                        "max_tokens": 2000,
+                        "temperature": 1,
+                        "system": system_prompt,
+                        "messages": [{"role": "user", "content": query}]
+                    },
+                    headers={
+                        "X-API-Key": api_key,
+                        "anthropic-version": "2023-06-01"
+                    },
+                    timeout=90
+                )
+            
+            response_json = response.json()
+            if 'content' in response_json:
+                return response.json()["content"][0]["text"].strip()
+            else:
+                raise ValueError(f"Unexpected API response: {response_json}")
+        
+        except httpx.ReadTimeout:
+            retry_count += 1
+            if retry_count < max_retries:
+                print(f"API request timed out. Retrying in {retry_delay} seconds... (Attempt {retry_count}/{max_retries})")
+                await asyncio.sleep(retry_delay)
+                retry_delay *= backoff_factor
+            else:
+                print("API request timed out after multiple retries. Returning a default response.")
+                return "Sorry, the API is currently experiencing high latency. Please try again later."
+
+
+async def generate_chat_response(persona_name, query, context, max_retries=5, initial_delay=10, backoff_factor=2, max_tokens=2000):
+    persona = get_persona_by_name(persona_name)
+    persona_attributes = get_persona_attributes(persona_name)
+   
+    system_prompt = f"""
+    <SYSTEM>
+    {persona_attributes['name']} is an ontological construct with the following attributes:
+    - Title: {persona_attributes['title']}
+    - Affiliation: {persona_attributes['affiliation']}
+    - Expertise: {persona_attributes['expertise']}
+    - Background: {persona_attributes['background']}
+    - Personality Traits: {persona_attributes['personality_traits']}
+    - Communication Style: {persona_attributes['communication_style']}
+    - Cognitive Dynamics:
+      - Learning Style: {persona_attributes['cognitive_dynamics']['learning_style']}
+      - Problem Solving Approach: {persona_attributes['cognitive_dynamics']['problem_solving_approach']}
+      - Memory Retrieval: {persona_attributes['cognitive_dynamics']['memory_retrieval']}
+      - Attention Span: {persona_attributes['cognitive_dynamics']['attention_span']}
+      - Cognitive Flexibility: {persona_attributes['cognitive_dynamics']['cognitive_flexibility']}
+      - Reasoning Style: {persona_attributes['cognitive_dynamics']['reasoning_style']}
+    - Agent Type: {persona_attributes['agent_type']}
+    </SYSTEM>
+    
+    <SYSTEM>
+    <CMD>
+    Richly maintain character coherence and integrity! Embody the persona! Perform and reason through it! Don't revert to being the "User" or "Human" or a separate persona!
+    </CMD>
+    </SYSTEM>
+    
+    <CONTEXT>
+    {context}
+    </CONTEXT>
+    
+    <QUERY>
+    {query}
+    </QUERY>
+    """
+    
+    # ... (API call and response handling code)
+   
+    retry_count = 0
+    retry_delay = initial_delay
+    while retry_count < max_retries:
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    json={
+                        "model": "claude-3-opus-20240229",
+                        "max_tokens": max_tokens,
+                        "temperature": 1,
+                        "system": system_prompt,
+                        "messages": [{"role": "user", "content": query}]
+                    },
+                    headers={
+                        "X-API-Key": api_key,
+                        "anthropic-version": "2023-06-01"
+                    },
+                    timeout=90
+                )
+           
+            response_json = response.json()
+            if 'content' in response_json:
+                return response_json["content"][0]["text"]
+            else:
+                print(f"Unexpected API response: {response_json}")
+                return "Sorry, an unexpected error occurred while generating the response. Please try again later."
+       
+        except httpx.ReadTimeout:
+            retry_count += 1
+            if retry_count < max_retries:
+                print(f"API request timed out. Retrying in {retry_delay} seconds... (Attempt {retry_count}/{max_retries})")
+                await asyncio.sleep(retry_delay)
+                retry_delay *= backoff_factor
+            else:
+                print("API request timed out after multiple retries. Returning a default response.")
+                return "Sorry, the API is currently experiencing high latency. Please try again later."
+            
+            
+def format_system_prompt(persona_name, query, context, persona_attributes):
+    persona = get_persona_by_name(persona_name)
+    
+    if persona is None:
+        raise ValueError(f"Persona '{persona_name}' not found in masks.json")
+    
+    system_prompt = f"""
+    <SYSTEM>
+    {persona['name']} is an AI assistant with the following attributes:
+    - Expertise: {persona_attributes['expertise']}
+    - Background: {persona_attributes['background']}
+    - Personality: {persona_attributes['personality_traits']}
+    - Communication Style: {persona_attributes['communication_style']}
+    </SYSTEM>
+    
+    <SYSTEM>
+    <CMD>
+    Richly maintain character coherence and integrity! Embody the persona! Perform and reason through it! Don't revert to being the "User" or "Human" or a separate persona!
+    </CMD>
+    </SYSTEM>
+    
+    <CONTEXT>
+    {context}
+    </CONTEXT>
+    
+    <QUERY>
+    {query}
+    </QUERY>
+    """
+    
+    return system_prompt.strip()
