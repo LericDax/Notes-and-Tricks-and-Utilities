@@ -1,4 +1,8 @@
-# utils.py
+########
+
+# utils 1
+
+########
 import os
 import time
 import math
@@ -176,3 +180,92 @@ def format_system_prompt(persona_name, query, context, persona_attributes):
     """
     
     return system_prompt.strip()
+
+
+
+
+
+###############
+### utils 2 ####
+###############
+# puppetmaster.py
+import datetime
+import os
+import random
+import math
+import threading
+import time
+import discord
+from discord.ext import commands, tasks
+from discord import Intents
+import asyncio
+import json
+from json.decoder import JSONDecodeError
+import logging
+import chromadb
+from chromadb.utils import embedding_functions
+from chromadb.config import Settings
+from chromadb import Client
+from persona import get_persona_by_name, get_persona_attributes
+from utils import generate_chat_response, format_system_prompt, generate_response
+import httpx
+from langchain_dex import VectorStoreQuery
+import puppetlogger
+from orchestrion import Orchestrion
+from onionknight import OnionKnight
+
+
+
+
+    async def generate_chat_response(self, channel, query, max_retries=5, initial_delay=10, backoff_factor=2):
+        logger.info(f"Generating chat response for query: {query}")
+        retry_count = 0
+        delay = initial_delay
+        while retry_count < max_retries:
+            try:
+                user_messages = []
+                async for msg in channel.history(limit=10):
+                    if msg.author != self.user:
+                        user_messages.append(msg)  # Append the Message object, not just the content
+
+                # Reverse the order of user messages to have the most recent messages first
+                user_messages = list(reversed(user_messages))
+
+                # Generate insights using the "Read The Room" function
+                insights = await self.read_the_room(user_messages)
+
+                # Construct the context by combining the insights and the most recent user messages
+                context = "\n".join(insights) + "\n" + "\n".join([msg.content for msg in user_messages[-5:]])
+
+                await asyncio.sleep(4)  # Add a 3-second delay before generating the response
+
+                logger.info(f"Calling generate_chat_response with persona_name: {self.persona_name}, query: {query}, context: {context}")
+                response_text = await generate_chat_response(self.persona_name, query, context, max_retries, initial_delay, backoff_factor, max_tokens=3000)
+                if response_text:
+                    logger.info(f"Generated response: {response_text}")
+                    # Chunk the response into smaller messages
+                    chunk_size = 1500
+                    chunks = [response_text[i:i+chunk_size] for i in range(0, len(response_text), chunk_size)]
+                    for chunk in chunks:
+                        await channel.send(chunk)
+                        await asyncio.sleep(5)  # Add a 3-second delay between sending each chunk
+                    puppetlogger.log_conversation(self.user.id, channel.id, query, response_text)
+                break  # Break the loop if the response is generated successfully
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429:
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        logger.warning(f"Encountered a 429 Too Many Requests error. Retrying in {delay} seconds... (Attempt {retry_count}/{max_retries})")
+                        await asyncio.sleep(delay)
+                        delay *= backoff_factor  # Exponential backoff
+                    else:
+                        logger.error(f"Failed to generate chat response after {max_retries} attempts due to 429 Too Many Requests error.")
+                        await channel.send("I apologize, but I'm currently experiencing a high volume of requests. Please try again later.")
+                        break
+                else:
+                    raise e
+            except Exception as e:
+                logger.error(f"Error in generate_chat_response: {str(e)}")
+                await channel.send("An error occurred while generating the chat response. Please try again later.")
+                break
+            
